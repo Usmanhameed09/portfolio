@@ -1,6 +1,5 @@
-import { promises as fs } from "node:fs"
-import path from "node:path"
 import { randomUUID } from "node:crypto"
+import { getStorage } from "./storage"
 
 export interface SavedLink {
   id: string
@@ -15,24 +14,15 @@ interface Manifest {
   links: SavedLink[]
 }
 
-const ROOT = path.join(process.cwd(), "knowledge-base")
-const FILE = path.join(ROOT, "links.json")
+const KEY = "links.json"
 
 async function readManifest(): Promise<Manifest> {
-  await fs.mkdir(ROOT, { recursive: true })
-  try {
-    const raw = await fs.readFile(FILE, "utf8")
-    const parsed = JSON.parse(raw) as Manifest
-    return { links: parsed.links || [] }
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { links: [] }
-    throw err
-  }
+  const raw = await getStorage().readJson<Manifest>(KEY, { links: [] })
+  return { links: raw.links || [] }
 }
 
 async function writeManifest(manifest: Manifest): Promise<void> {
-  await fs.mkdir(ROOT, { recursive: true })
-  await fs.writeFile(FILE, JSON.stringify(manifest, null, 2), "utf8")
+  await getStorage().writeJson(KEY, manifest)
 }
 
 export async function listLinks(): Promise<SavedLink[]> {

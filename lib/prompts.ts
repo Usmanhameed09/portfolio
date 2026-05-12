@@ -1,6 +1,5 @@
-import { promises as fs } from "node:fs"
-import path from "node:path"
 import { randomUUID } from "node:crypto"
+import { getStorage } from "./storage"
 
 export interface SavedPrompt {
   id: string
@@ -13,24 +12,15 @@ interface Manifest {
   prompts: SavedPrompt[]
 }
 
-const ROOT = path.join(process.cwd(), "knowledge-base")
-const FILE = path.join(ROOT, "prompts.json")
+const KEY = "prompts.json"
 
 async function readManifest(): Promise<Manifest> {
-  await fs.mkdir(ROOT, { recursive: true })
-  try {
-    const raw = await fs.readFile(FILE, "utf8")
-    const parsed = JSON.parse(raw) as Manifest
-    return { prompts: parsed.prompts || [] }
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { prompts: [] }
-    throw err
-  }
+  const raw = await getStorage().readJson<Manifest>(KEY, { prompts: [] })
+  return { prompts: raw.prompts || [] }
 }
 
 async function writeManifest(manifest: Manifest): Promise<void> {
-  await fs.mkdir(ROOT, { recursive: true })
-  await fs.writeFile(FILE, JSON.stringify(manifest, null, 2), "utf8")
+  await getStorage().writeJson(KEY, manifest)
 }
 
 export async function listPrompts(): Promise<SavedPrompt[]> {

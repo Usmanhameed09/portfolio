@@ -1,12 +1,12 @@
-import { promises as fs } from "node:fs"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
 import mammoth from "mammoth"
+import { getStorage } from "./storage"
 
 export interface KbFile {
   id: string
   originalName: string
-  storedName: string
+  ref: string
   mimeType: string
   size: number
   uploadedAt: string
@@ -23,33 +23,18 @@ interface Manifest {
   files: KbFile[]
 }
 
-const ROOT = path.join(process.cwd(), "knowledge-base")
-const FILES_DIR = path.join(ROOT, "files")
-const MANIFEST_PATH = path.join(ROOT, "manifest.json")
+const MANIFEST_KEY = "manifest.json"
 
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"])
 const TEXT_EXTS = new Set([".txt", ".md"])
 
-async function ensureDirs(): Promise<void> {
-  await fs.mkdir(FILES_DIR, { recursive: true })
-}
-
 async function readManifest(): Promise<Manifest> {
-  await ensureDirs()
-  try {
-    const raw = await fs.readFile(MANIFEST_PATH, "utf8")
-    const parsed = JSON.parse(raw) as Manifest
-    if (!parsed.files) return { files: [] }
-    return parsed
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { files: [] }
-    throw err
-  }
+  const raw = await getStorage().readJson<Manifest>(MANIFEST_KEY, { files: [] })
+  return { files: raw.files || [] }
 }
 
 async function writeManifest(manifest: Manifest): Promise<void> {
-  await ensureDirs()
-  await fs.writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2), "utf8")
+  await getStorage().writeJson(MANIFEST_KEY, manifest)
 }
 
 export async function listFiles(): Promise<KbFile[]> {
@@ -62,21 +47,19 @@ export async function addFile(input: {
   buffer: Buffer
   mimeType: string
 }): Promise<KbFile> {
-  const id = randomUUID()
-  const ext = path.extname(input.originalName).toLowerCase() || guessExt(input.mimeType)
-  const storedName = `${id}${ext}`
-  await ensureDirs()
-  await fs.writeFile(path.join(FILES_DIR, storedName), input.buffer)
+  const storage = getStorage()
+  const ref = await storage.putFile(input.originalName, input.buffer, input.mimeType)
 
+  const ext = path.extname(input.originalName).toLowerCase()
   const excerpt = isBinaryByExt(ext)
     ? ""
     : (await safeExtractText(input.buffer, input.mimeType, input.originalName)).slice(0, 300)
 
   const manifest = await readManifest()
   const file: KbFile = {
-    id,
+    id: randomUUID(),
     originalName: input.originalName,
-    storedName,
+    ref,
     mimeType: input.mimeType,
     size: input.buffer.length,
     uploadedAt: new Date().toISOString(),
@@ -93,11 +76,7 @@ export async function deleteFile(id: string): Promise<boolean> {
   const idx = manifest.files.findIndex((f) => f.id === id)
   if (idx === -1) return false
   const [removed] = manifest.files.splice(idx, 1)
-  try {
-    await fs.unlink(path.join(FILES_DIR, removed.storedName))
-  } catch {
-    // ignore — file may already be gone
-  }
+  await getStorage().deleteFile(removed.ref)
   await writeManifest(manifest)
   return true
 }
@@ -114,10 +93,11 @@ export async function setSelected(id: string, selected: boolean): Promise<KbFile
 export async function readSelectedItems(): Promise<SelectedItem[]> {
   const manifest = await readManifest()
   const selected = manifest.files.filter((f) => f.selected)
+  const storage = getStorage()
   const out: SelectedItem[] = []
   for (const f of selected) {
     try {
-      const buf = await fs.readFile(path.join(FILES_DIR, f.storedName))
+      const buf = await storage.getFile(f.ref)
       out.push(await classifyBuffer({ name: f.originalName, mimeType: f.mimeType, buffer: buf }))
     } catch (err) {
       out.push({
@@ -213,16 +193,4 @@ async function safeExtractText(
   } catch {
     return ""
   }
-}
-
-function guessExt(mimeType: string): string {
-  if (mimeType === "application/pdf") return ".pdf"
-  if (mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-    return ".docx"
-  if (mimeType === "image/png") return ".png"
-  if (mimeType === "image/jpeg") return ".jpg"
-  if (mimeType === "image/webp") return ".webp"
-  if (mimeType === "image/gif") return ".gif"
-  if (mimeType.startsWith("text/")) return ".txt"
-  return ""
 }
