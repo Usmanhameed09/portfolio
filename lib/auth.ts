@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto"
 import { SESSION_TOKEN } from "./auth-shared"
 import { env } from "node:process"
 
+
 const PASSWORD = env.PASSWORD || ""
 
 export function verifyPassword(input: string): boolean {
