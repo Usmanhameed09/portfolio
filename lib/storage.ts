@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
-import { put, del, list } from "@vercel/blob"
+import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 
 export interface Storage {
   readJson<T>(key: string, fallback: T): Promise<T>
@@ -15,8 +15,12 @@ let cached: Storage | null = null
 
 export function getStorage(): Storage {
   if (cached) return cached
-  cached = process.env.BLOB_READ_WRITE_TOKEN ? createBlobStorage() : createLocalStorage()
+  cached = supabaseConfigured() ? createSupabaseStorage() : createLocalStorage()
   return cached
+}
+
+function supabaseConfigured(): boolean {
+  return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY)
 }
 
 function createLocalStorage(): Storage {
@@ -58,51 +62,59 @@ function createLocalStorage(): Storage {
   }
 }
 
-function createBlobStorage(): Storage {
-  const PREFIX = "proposal-gen/"
+function createSupabaseStorage(): Storage {
+  const url = process.env.SUPABASE_URL!
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
+  const bucket = process.env.SUPABASE_BUCKET || "proposal-gen"
+  let clientRef: SupabaseClient | null = null
+
+  function client(): SupabaseClient {
+    if (!clientRef) {
+      clientRef = createClient(url, serviceKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      })
+    }
+    return clientRef
+  }
 
   return {
     async readJson<T>(key: string, fallback: T): Promise<T> {
-      const pathname = PREFIX + key
+      const { data, error } = await client().storage.from(bucket).download(key)
+      if (error || !data) return fallback
       try {
-        const { blobs } = await list({ prefix: pathname, limit: 10 })
-        const match = blobs.find((b) => b.pathname === pathname)
-        if (!match) return fallback
-        const res = await fetch(match.url, { cache: "no-store" })
-        if (!res.ok) return fallback
-        return (await res.json()) as T
+        const text = await data.text()
+        return JSON.parse(text) as T
       } catch {
         return fallback
       }
     },
     async writeJson<T>(key: string, value: T): Promise<void> {
-      await put(PREFIX + key, JSON.stringify(value, null, 2), {
-        access: "public",
-        addRandomSuffix: false,
-        allowOverwrite: true,
+      const body = JSON.stringify(value, null, 2)
+      const { error } = await client().storage.from(bucket).upload(key, body, {
         contentType: "application/json",
+        upsert: true,
       })
+      if (error) throw new Error(`Supabase writeJson(${key}): ${error.message}`)
     },
     async putFile(filename: string, buffer: Buffer, mimeType: string): Promise<string> {
       const id = randomUUID()
       const ext = path.extname(filename).toLowerCase()
-      const pathname = `${PREFIX}files/${id}${ext}`
-      const result = await put(pathname, buffer, {
-        access: "public",
-        addRandomSuffix: false,
-        allowOverwrite: false,
+      const ref = `files/${id}${ext}`
+      const { error } = await client().storage.from(bucket).upload(ref, buffer, {
         contentType: mimeType || "application/octet-stream",
+        upsert: false,
       })
-      return result.url
+      if (error) throw new Error(`Supabase putFile: ${error.message}`)
+      return ref
     },
     async getFile(ref: string): Promise<Buffer> {
-      const res = await fetch(ref, { cache: "no-store" })
-      if (!res.ok) throw new Error(`Failed to fetch blob (${res.status})`)
-      return Buffer.from(await res.arrayBuffer())
+      const { data, error } = await client().storage.from(bucket).download(ref)
+      if (error || !data) throw new Error(`Supabase getFile(${ref}): ${error?.message ?? "no data"}`)
+      return Buffer.from(await data.arrayBuffer())
     },
     async deleteFile(ref: string): Promise<void> {
       try {
-        await del(ref)
+        await client().storage.from(bucket).remove([ref])
       } catch {
         /* ignore */
       }
