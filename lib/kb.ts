@@ -117,6 +117,10 @@ export async function classifyBuffer(input: {
 }): Promise<SelectedItem> {
   const ext = path.extname(input.name).toLowerCase()
   if (ext === ".pdf" || input.mimeType === "application/pdf") {
+    const text = await safeExtractText(input.buffer, "application/pdf", input.name)
+    if (text && text.trim().length > 20) {
+      return { kind: "text", name: input.name, text }
+    }
     return { kind: "pdf", name: input.name, buffer: input.buffer }
   }
   if (IMAGE_EXTS.has(ext) || input.mimeType.startsWith("image/")) {
@@ -174,7 +178,9 @@ async function safeExtractText(
       const parser = new PDFParse({ data })
       try {
         const result = await parser.getText()
-        return result.text || ""
+        const text = result.text || ""
+        console.log(`[kb] extracted ${text.length} chars from PDF "${originalName}"`)
+        return text
       } finally {
         await parser.destroy().catch(() => {})
       }
@@ -190,7 +196,8 @@ async function safeExtractText(
       return buffer.toString("utf8")
     }
     return ""
-  } catch {
+  } catch (err) {
+    console.error(`[kb] safeExtractText failed for "${originalName}":`, (err as Error).message)
     return ""
   }
 }

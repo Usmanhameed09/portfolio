@@ -78,20 +78,27 @@ export async function POST(req: Request) {
   }
 
   const items = await readSelectedItems()
+  console.log(
+    `[generate] loaded ${items.length} selected KB items:`,
+    items.map((i) => `${i.name}(${i.kind})`),
+  )
   if (items.length > 0) {
     parts.push({
       type: "text",
-      text: "=== UPLOADED PORTFOLIO FILES ===\n(Actual files attached below.)",
+      text: "=== UPLOADED PORTFOLIO KNOWLEDGE — treat the contents below as authoritative portfolio facts the proposal must draw from ===",
     })
     for (const item of items) {
       if (item.kind === "pdf") {
-        parts.push({ type: "text", text: `--- PDF: ${item.name} ---` })
+        parts.push({ type: "text", text: `--- PDF (raw, no extractable text): ${item.name} ---` })
         parts.push({ type: "pdf", filename: item.name, data: item.buffer })
       } else if (item.kind === "image") {
         parts.push({ type: "text", text: `--- IMAGE: ${item.name} ---` })
         parts.push({ type: "image", mimeType: item.mimeType, data: item.buffer })
       } else {
-        parts.push({ type: "text", text: `--- ${item.name} ---\n${item.text}` })
+        parts.push({
+          type: "text",
+          text: `--- ${item.name} (portfolio content) ---\n${item.text}`,
+        })
       }
     }
   }
