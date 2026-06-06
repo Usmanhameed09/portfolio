@@ -2,6 +2,7 @@ import path from "node:path"
 import { randomUUID } from "node:crypto"
 import mammoth from "mammoth"
 import { getStorage } from "./storage"
+import { deleteOpenAIFile } from "./llm"
 
 export interface KbFile {
   id: string
@@ -12,10 +13,12 @@ export interface KbFile {
   uploadedAt: string
   selected: boolean
   excerpt?: string
+  // Cached OpenAI Files API id so a PDF is uploaded once and reused.
+  openaiFileId?: string
 }
 
 export type SelectedItem =
-  | { kind: "pdf"; name: string; buffer: Buffer }
+  | { kind: "pdf"; name: string; buffer: Buffer; kbId?: string; openaiFileId?: string }
   | { kind: "image"; name: string; mimeType: string; buffer: Buffer }
   | { kind: "text"; name: string; text: string }
 
@@ -30,7 +33,19 @@ const TEXT_EXTS = new Set([".txt", ".md"])
 
 async function readManifest(): Promise<Manifest> {
   const raw = await getStorage().readJson<Manifest>(MANIFEST_KEY, { files: [] })
-  return { files: raw.files || [] }
+  return { files: (raw.files || []).map(normalizeFile) }
+}
+
+// Older uploads stored the storage path under `storedName` (bare filename)
+// instead of `ref` (`files/<name>`). Backfill `ref` so legacy records still
+// resolve to a real file instead of failing to download.
+function normalizeFile(f: KbFile): KbFile {
+  if (f.ref) return f
+  const legacy = (f as KbFile & { storedName?: string }).storedName
+  if (legacy) {
+    return { ...f, ref: legacy.startsWith("files/") ? legacy : `files/${legacy}` }
+  }
+  return f
 }
 
 async function writeManifest(manifest: Manifest): Promise<void> {
@@ -77,6 +92,7 @@ export async function deleteFile(id: string): Promise<boolean> {
   if (idx === -1) return false
   const [removed] = manifest.files.splice(idx, 1)
   await getStorage().deleteFile(removed.ref)
+  if (removed.openaiFileId) await deleteOpenAIFile(removed.openaiFileId)
   await writeManifest(manifest)
   return true
 }
@@ -90,6 +106,15 @@ export async function setSelected(id: string, selected: boolean): Promise<KbFile
   return file
 }
 
+// Persist the OpenAI Files API id for a KB file so it is uploaded only once.
+export async function setOpenAIFileId(id: string, openaiFileId: string): Promise<void> {
+  const manifest = await readManifest()
+  const file = manifest.files.find((f) => f.id === id)
+  if (!file) return
+  file.openaiFileId = openaiFileId
+  await writeManifest(manifest)
+}
+
 export async function readSelectedItems(): Promise<SelectedItem[]> {
   const manifest = await readManifest()
   const selected = manifest.files.filter((f) => f.selected)
@@ -98,8 +123,16 @@ export async function readSelectedItems(): Promise<SelectedItem[]> {
   for (const f of selected) {
     try {
       const buf = await storage.getFile(f.ref)
-      out.push(await classifyBuffer({ name: f.originalName, mimeType: f.mimeType, buffer: buf }))
+      const item = await classifyBuffer({ name: f.originalName, mimeType: f.mimeType, buffer: buf })
+      if (item.kind === "pdf") {
+        item.kbId = f.id
+        item.openaiFileId = f.openaiFileId
+      }
+      out.push(item)
     } catch (err) {
+      console.error(
+        `[kb] FAILED to read "${f.originalName}" (ref="${f.ref}"): ${(err as Error).message}`,
+      )
       out.push({
         kind: "text",
         name: f.originalName,
@@ -117,10 +150,9 @@ export async function classifyBuffer(input: {
 }): Promise<SelectedItem> {
   const ext = path.extname(input.name).toLowerCase()
   if (ext === ".pdf" || input.mimeType === "application/pdf") {
-    const text = await safeExtractText(input.buffer, "application/pdf", input.name)
-    if (text && text.trim().length > 20) {
-      return { kind: "text", name: input.name, text }
-    }
+    // Send the whole PDF so the model reads it natively — text AND images.
+    // No text extraction: a portfolio PDF's visuals would be lost, and the
+    // native read already covers the text.
     return { kind: "pdf", name: input.name, buffer: input.buffer }
   }
   if (IMAGE_EXTS.has(ext) || input.mimeType.startsWith("image/")) {

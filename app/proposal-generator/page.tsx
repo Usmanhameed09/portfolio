@@ -61,19 +61,7 @@ interface SavedLink {
   createdAt: string
 }
 
-const DEFAULT_PROMPT = `You are an expert Upwork proposal writer for a senior AI Automation Engineer.
-Write a tailored proposal that:
-- Opens with a one-line, specific hook that proves I read the job (no "Hi, I am..." templates).
-- Mirrors the client's pain or goal in their own words.
-- Names 1–2 directly relevant projects from my portfolio with concrete results (numbers, stack, outcome).
-- Proposes a concrete first step or short plan (max 3 bullets).
-- Do NOT include answers to job questions inside the proposal — those are returned separately.
-- Ends with a low-pressure CTA (e.g., "Want me to share a 5-min Loom walkthrough of a similar build?").
-- Tone: confident, specific, friendly, no fluff, no buzzword salad.
-- Length: 150–220 words unless the job clearly demands more.
-- Do NOT invent experience I don't have. Use only the portfolio knowledge provided.
-
-Output only the final proposal text — no preamble, no headings, no markdown unless the job explicitly asks for it.`
+const DEFAULT_PROMPT = `You are an expert Upwork proposal writer. Using my portfolio and the job details provided, write a tailored proposal.`
 
 export default function ProposalGeneratorPage() {
   const [files, setFiles] = useState<KbFile[]>([])
@@ -81,7 +69,6 @@ export default function ProposalGeneratorPage() {
   const [prompts, setPrompts] = useState<SavedPrompt[]>([])
   const [activePromptId, setActivePromptId] = useState<string>("")
 
-  const [includeSiteKnowledge, setIncludeSiteKnowledge] = useState(true)
   const [systemPrompt, setSystemPrompt] = useState(DEFAULT_PROMPT)
   const [jobDescription, setJobDescription] = useState("")
   const [jobQuestions, setJobQuestions] = useState("")
@@ -293,7 +280,6 @@ export default function ProposalGeneratorPage() {
       fd.append("jobQuestions", jobQuestions)
       fd.append("clientDocs", clientDocs)
       fd.append("extraContext", extraContext)
-      fd.append("includeSiteKnowledge", String(includeSiteKnowledge))
       for (const f of clientFiles) fd.append("clientFiles", f)
       for (const f of extraFiles) fd.append("extraFiles", f)
 
@@ -387,24 +373,11 @@ export default function ProposalGeneratorPage() {
               <CardHeader>
                 <CardTitle className="text-lg">Knowledge Base</CardTitle>
                 <CardDescription>
-                  Toggle which sources to include in this generation.
+                  Upload your portfolio (PDF, docs, images) and toggle which files to include.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <label className="flex items-center gap-3 cursor-pointer">
-                  <Checkbox
-                    checked={includeSiteKnowledge}
-                    onCheckedChange={(v) => setIncludeSiteKnowledge(v === true)}
-                  />
-                  <div>
-                    <div className="text-sm font-medium">Portfolio website content</div>
-                    <div className="text-xs text-muted-foreground">
-                      Bio, services, projects, tech stack
-                    </div>
-                  </div>
-                </label>
-
-                <div className="border-t border-border pt-4">
+                <div>
                   <div className="flex items-center justify-between mb-3">
                     <Label className="text-sm font-medium">Uploaded files</Label>
                     <Button

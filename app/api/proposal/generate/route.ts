@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server"
-import { generate, getProvider, type ContentPart } from "@/lib/llm"
-import { classifyBuffer, readSelectedItems } from "@/lib/kb"
+import {
+  generate,
+  getProvider,
+  uploadOpenAIPdf,
+  deleteOpenAIFile,
+  type ContentPart,
+} from "@/lib/llm"
+import { classifyBuffer, readSelectedItems, setOpenAIFileId } from "@/lib/kb"
 import { listSelectedLinks } from "@/lib/links"
-import { SITE_KNOWLEDGE } from "@/lib/site-knowledge"
 
 export const runtime = "nodejs"
 export const maxDuration = 60
@@ -26,7 +31,10 @@ interface AnswerItem {
   answer: string
 }
 
-async function fileFromForm(file: File): Promise<ContentPart | null> {
+async function fileFromForm(
+  file: File,
+  resolveFileId?: (data: Buffer, filename: string) => Promise<string | undefined>,
+): Promise<ContentPart | null> {
   if (!file.name) return null
   if (file.size === 0) return null
   if (file.size > MAX_TRANSIENT_BYTES) {
@@ -38,7 +46,10 @@ async function fileFromForm(file: File): Promise<ContentPart | null> {
     mimeType: file.type || "application/octet-stream",
     buffer,
   })
-  if (item.kind === "pdf") return { type: "pdf", filename: item.name, data: item.buffer }
+  if (item.kind === "pdf") {
+    const fileId = await resolveFileId?.(item.buffer, item.name)
+    return { type: "pdf", filename: item.name, data: item.buffer, fileId }
+  }
   if (item.kind === "image")
     return { type: "image", mimeType: item.mimeType, data: item.buffer }
   return { type: "text", text: `--- ${item.name} ---\n${item.text}` }
@@ -63,18 +74,34 @@ export async function POST(req: Request) {
   const jobQuestions = String(form.get("jobQuestions") || "").trim()
   const clientDocs = String(form.get("clientDocs") || "").trim()
   const extraContext = String(form.get("extraContext") || "").trim()
-  const includeSiteKnowledge = String(form.get("includeSiteKnowledge") || "true") !== "false"
 
   const clientFiles = form.getAll("clientFiles").filter((v): v is File => v instanceof File)
   const extraFiles = form.getAll("extraFiles").filter((v): v is File => v instanceof File)
 
   const parts: ContentPart[] = []
+  const provider = getProvider()
+  // OpenAI Files API ids for transient (per-request) uploads, deleted after use.
+  const transientOpenAIFiles: string[] = []
 
-  if (includeSiteKnowledge) {
-    parts.push({
-      type: "text",
-      text: "=== PORTFOLIO WEBSITE KNOWLEDGE ===\n" + SITE_KNOWLEDGE,
-    })
+  // Resolve a PDF to an OpenAI file id when on OpenAI: reuse the cached id for
+  // KB files (persisting it), upload transient files fresh. Falls back to
+  // inlining the bytes if upload fails.
+  async function resolvePdfFileId(
+    data: Buffer,
+    filename: string,
+    cache?: { kbId?: string; existing?: string },
+  ): Promise<string | undefined> {
+    if (provider !== "openai") return undefined
+    if (cache?.existing) return cache.existing
+    try {
+      const fileId = await uploadOpenAIPdf(data, filename)
+      if (cache?.kbId) await setOpenAIFileId(cache.kbId, fileId)
+      else transientOpenAIFiles.push(fileId)
+      return fileId
+    } catch (err) {
+      console.error(`[generate] OpenAI upload failed for ${filename}:`, (err as Error).message)
+      return undefined
+    }
   }
 
   const items = await readSelectedItems()
@@ -85,12 +112,19 @@ export async function POST(req: Request) {
   if (items.length > 0) {
     parts.push({
       type: "text",
-      text: "=== UPLOADED PORTFOLIO KNOWLEDGE — treat the contents below as authoritative portfolio facts the proposal must draw from ===",
+      text: "=== MY PORTFOLIO (uploaded files) ===",
     })
     for (const item of items) {
       if (item.kind === "pdf") {
-        parts.push({ type: "text", text: `--- PDF (raw, no extractable text): ${item.name} ---` })
-        parts.push({ type: "pdf", filename: item.name, data: item.buffer })
+        parts.push({
+          type: "text",
+          text: `--- PDF: ${item.name} (read this whole document directly — text and images — it is part of my portfolio) ---`,
+        })
+        const fileId = await resolvePdfFileId(item.buffer, item.name, {
+          kbId: item.kbId,
+          existing: item.openaiFileId,
+        })
+        parts.push({ type: "pdf", filename: item.name, data: item.buffer, fileId })
       } else if (item.kind === "image") {
         parts.push({ type: "text", text: `--- IMAGE: ${item.name} ---` })
         parts.push({ type: "image", mimeType: item.mimeType, data: item.buffer })
@@ -112,7 +146,7 @@ export async function POST(req: Request) {
     parts.push({
       type: "text",
       text:
-        "=== RELEVANT LINKS (weave naturally into the proposal where they strengthen a claim) ===\n" +
+        "=== MY LINKS (use these exactly as written; never invent URLs) ===\n" +
         lines.join("\n"),
     })
   }
@@ -133,7 +167,7 @@ export async function POST(req: Request) {
     if (clientDocs) parts.push({ type: "text", text: clientDocs })
     try {
       for (const f of clientFiles) {
-        const part = await fileFromForm(f)
+        const part = await fileFromForm(f, resolvePdfFileId)
         if (part) {
           parts.push({ type: "text", text: `--- ${f.name} ---` })
           parts.push(part)
@@ -149,7 +183,7 @@ export async function POST(req: Request) {
     if (extraContext) parts.push({ type: "text", text: extraContext })
     try {
       for (const f of extraFiles) {
-        const part = await fileFromForm(f)
+        const part = await fileFromForm(f, resolvePdfFileId)
         if (part) {
           parts.push({ type: "text", text: `--- ${f.name} ---` })
           parts.push(part)
@@ -163,7 +197,8 @@ export async function POST(req: Request) {
   parts.push({
     type: "text",
     text:
-      "Using all of the above (text + attached files), write the Upwork proposal now, following the system prompt rules exactly. Remember: respond as JSON per the schema.",
+      "Using all of the above (text + attached files), write the Upwork proposal now, following the system prompt. " +
+      "Respond as JSON per the schema.",
   })
 
   try {
@@ -189,8 +224,12 @@ export async function POST(req: Request) {
 
     if (!proposal) proposal = raw.trim()
 
-    return NextResponse.json({ proposal, answers, provider: getProvider() })
+    return NextResponse.json({ proposal, answers, provider })
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 500 })
+  } finally {
+    // Clean up per-request uploads so they don't accumulate in the OpenAI account.
+    // KB file ids are cached and intentionally kept for reuse.
+    for (const id of transientOpenAIFiles) await deleteOpenAIFile(id)
   }
 }

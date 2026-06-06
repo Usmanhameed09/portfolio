@@ -1,4 +1,4 @@
-import OpenAI from "openai"
+import OpenAI, { toFile } from "openai"
 import { GoogleGenerativeAI } from "@google/generative-ai"
 
 export type LLMProvider = "openai" | "gemini"
@@ -6,7 +6,8 @@ export type LLMProvider = "openai" | "gemini"
 export type ContentPart =
   | { type: "text"; text: string }
   | { type: "image"; mimeType: string; data: Buffer }
-  | { type: "pdf"; filename: string; data: Buffer }
+  // fileId: an OpenAI Files API id to reference instead of inlining the bytes.
+  | { type: "pdf"; filename: string; data: Buffer; fileId?: string }
 
 export interface GenerateInput {
   system: string
@@ -19,6 +20,32 @@ export function getProvider(): LLMProvider {
   return raw === "gemini" ? "gemini" : "openai"
 }
 
+let openaiClientRef: OpenAI | null = null
+
+function openaiClient(): OpenAI {
+  const apiKey = process.env.OPENAI_API_KEY
+  if (!apiKey) throw new Error("OPENAI_API_KEY is not set in .env.local")
+  if (!openaiClientRef) openaiClientRef = new OpenAI({ apiKey })
+  return openaiClientRef
+}
+
+// Upload a PDF to the OpenAI Files API and return its file id. Reference the
+// returned id in chat content as { type: "file", file: { file_id } } — no need
+// to inline the bytes on every request.
+export async function uploadOpenAIPdf(data: Buffer, filename: string): Promise<string> {
+  const file = await toFile(data, filename || "document.pdf", { type: "application/pdf" })
+  const uploaded = await openaiClient().files.create({ file, purpose: "user_data" })
+  return uploaded.id
+}
+
+export async function deleteOpenAIFile(fileId: string): Promise<void> {
+  try {
+    await openaiClient().files.delete(fileId)
+  } catch (err) {
+    console.error(`[llm] failed to delete OpenAI file ${fileId}:`, (err as Error).message)
+  }
+}
+
 export async function generate(input: GenerateInput): Promise<string> {
   const provider = getProvider()
   if (provider === "gemini") return generateGemini(input)
@@ -26,9 +53,7 @@ export async function generate(input: GenerateInput): Promise<string> {
 }
 
 async function generateOpenAI({ system, parts, jsonOutput }: GenerateInput): Promise<string> {
-  const apiKey = process.env.OPENAI_API_KEY
-  if (!apiKey) throw new Error("OPENAI_API_KEY is not set in .env.local")
-  const client = new OpenAI({ apiKey })
+  const client = openaiClient()
   const model = process.env.OPENAI_MODEL || "gpt-4o"
 
   const content = parts.map((p) => {
@@ -38,6 +63,11 @@ async function generateOpenAI({ system, parts, jsonOutput }: GenerateInput): Pro
         type: "image_url",
         image_url: { url: `data:${p.mimeType};base64,${p.data.toString("base64")}` },
       }
+    }
+    // Prefer a pre-uploaded Files API id; fall back to inline bytes only if the
+    // upload wasn't done (e.g. it failed and we still want a best-effort send).
+    if (p.fileId) {
+      return { type: "file", file: { file_id: p.fileId } }
     }
     return {
       type: "file",
