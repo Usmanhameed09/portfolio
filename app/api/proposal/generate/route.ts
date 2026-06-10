@@ -151,17 +151,6 @@ export async function POST(req: Request) {
     })
   }
 
-  parts.push({ type: "text", text: "=== UPWORK JOB DESCRIPTION ===\n" + jobDescription })
-
-  if (jobQuestions) {
-    parts.push({
-      type: "text",
-      text:
-        "=== JOB QUESTIONS — answer each SEPARATELY in the JSON 'answers' array, NOT in the proposal body ===\n" +
-        jobQuestions,
-    })
-  }
-
   if (clientDocs || clientFiles.length > 0) {
     parts.push({ type: "text", text: "=== CLIENT-ATTACHED DOCS ===" })
     if (clientDocs) parts.push({ type: "text", text: clientDocs })
@@ -194,10 +183,27 @@ export async function POST(req: Request) {
     }
   }
 
+  // Job description + questions go LAST so they are the freshest context for
+  // the model — placing them after the (often large) portfolio avoids the
+  // "lost in the middle" effect where the actual task gets skimmed.
+  parts.push({ type: "text", text: "=== UPWORK JOB DESCRIPTION (this is the job you are applying to — read it carefully and in full) ===\n" + jobDescription })
+
+  if (jobQuestions) {
+    parts.push({
+      type: "text",
+      text:
+        "=== JOB QUESTIONS — answer each SEPARATELY in the JSON 'answers' array, NOT in the proposal body ===\n" +
+        jobQuestions,
+    })
+  }
+
   parts.push({
     type: "text",
     text:
-      "Using all of the above (text + attached files), write the Upwork proposal now, following the system prompt. " +
+      "TASK: Write the Upwork proposal now, following the system prompt.\n" +
+      "Before writing, silently extract EVERY distinct requirement, skill, technology, deliverable, and question stated in the UPWORK JOB DESCRIPTION above. " +
+      "Your proposal must explicitly address each one — do not skip or gloss over any point the client raised. " +
+      "Ground your claims in MY PORTFOLIO and attached files; never invent experience or URLs. " +
       "Respond as JSON per the schema.",
   })
 

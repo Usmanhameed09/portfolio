@@ -54,7 +54,10 @@ export async function generate(input: GenerateInput): Promise<string> {
 
 async function generateOpenAI({ system, parts, jsonOutput }: GenerateInput): Promise<string> {
   const client = openaiClient()
-  const model = process.env.OPENAI_MODEL || "gpt-4o"
+  const model = process.env.OPENAI_MODEL || "gpt-5.4"
+  // Reasoning models (gpt-5, o-series) only accept the default temperature;
+  // sending a custom value errors. Lower temperature only where it's supported.
+  const supportsTemperature = !/^(gpt-5|o\d)/i.test(model)
 
   const content = parts.map((p) => {
     if (p.type === "text") return { type: "text", text: p.text }
@@ -85,7 +88,7 @@ async function generateOpenAI({ system, parts, jsonOutput }: GenerateInput): Pro
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       { role: "user", content: content as any },
     ],
-    temperature: 0.7,
+    ...(supportsTemperature ? { temperature: 0.3 } : {}),
     ...(jsonOutput ? { response_format: { type: "json_object" as const } } : {}),
   })
   const text = completion.choices[0]?.message?.content?.trim()
@@ -101,9 +104,10 @@ async function generateGemini({ system, parts, jsonOutput }: GenerateInput): Pro
   const model = client.getGenerativeModel({
     model: modelName,
     systemInstruction: system,
-    ...(jsonOutput
-      ? { generationConfig: { responseMimeType: "application/json" } }
-      : {}),
+    generationConfig: {
+      temperature: 0.3,
+      ...(jsonOutput ? { responseMimeType: "application/json" } : {}),
+    },
   })
 
   const geminiParts = parts.map((p) => {
