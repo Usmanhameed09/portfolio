@@ -6,12 +6,14 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Lock } from "lucide-react"
+import { createClient } from "@/lib/supabase/client"
 
 function LoginForm() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const from = searchParams.get("from") || "/proposal-generator"
 
+  const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -21,15 +23,9 @@ function LoginForm() {
     setError(null)
     setLoading(true)
     try {
-      const res = await fetch("/api/proposal/auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || "Invalid password")
-      }
+      const supabase = createClient()
+      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      if (error) throw new Error(error.message)
       router.replace(from)
       router.refresh()
     } catch (err) {
@@ -42,19 +38,29 @@ function LoginForm() {
   return (
     <form onSubmit={onSubmit} className="space-y-4 bg-card border border-border rounded-2xl p-6">
       <div className="space-y-2">
+        <Label htmlFor="email">Email</Label>
+        <Input
+          id="email"
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          autoFocus
+          required
+        />
+      </div>
+      <div className="space-y-2">
         <Label htmlFor="password">Password</Label>
         <Input
           id="password"
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          autoFocus
           required
         />
       </div>
       {error ? <p className="text-sm text-destructive">{error}</p> : null}
       <Button type="submit" className="w-full" disabled={loading}>
-        {loading ? "Verifying…" : "Unlock"}
+        {loading ? "Signing in…" : "Sign in"}
       </Button>
     </form>
   )
@@ -69,7 +75,7 @@ export default function LoginPage() {
             <Lock className="w-7 h-7 text-primary" />
           </div>
           <h1 className="text-2xl font-bold text-foreground">Proposal Generator</h1>
-          <p className="text-sm text-muted-foreground mt-1">Enter the password to continue</p>
+          <p className="text-sm text-muted-foreground mt-1">Sign in to continue</p>
         </div>
         <Suspense fallback={null}>
           <LoginForm />

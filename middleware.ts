@@ -1,24 +1,30 @@
-import { NextResponse } from "next/server"
-import type { NextRequest } from "next/server"
-import { AUTH_COOKIE, SESSION_TOKEN } from "@/lib/auth-shared"
+import { NextResponse, type NextRequest } from "next/server"
+import { updateSession } from "@/lib/supabase/middleware"
 
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
-  if (pathname === "/proposal-generator/login") return NextResponse.next()
-  if (pathname.startsWith("/api/proposal/auth")) return NextResponse.next()
+  // Refresh the session first so auth cookies stay valid; `user` is null when
+  // signed out, deleted, or banned in the Supabase dashboard.
+  const { supabaseResponse, user } = await updateSession(request)
 
-  const token = request.cookies.get(AUTH_COOKIE)?.value
-  if (token === SESSION_TOKEN) return NextResponse.next()
+  // The login page must be reachable while signed out.
+  if (pathname === "/proposal-generator/login") return supabaseResponse
 
-  if (pathname.startsWith("/api/proposal/")) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  if (!user) {
+    if (pathname.startsWith("/api/proposal/")) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+    const url = request.nextUrl.clone()
+    url.pathname = "/proposal-generator/login"
+    url.searchParams.set("from", pathname)
+    const redirect = NextResponse.redirect(url)
+    // Preserve any refreshed/cleared auth cookies on the redirect.
+    supabaseResponse.cookies.getAll().forEach((c) => redirect.cookies.set(c))
+    return redirect
   }
 
-  const url = request.nextUrl.clone()
-  url.pathname = "/proposal-generator/login"
-  url.searchParams.set("from", pathname)
-  return NextResponse.redirect(url)
+  return supabaseResponse
 }
 
 export const config = {

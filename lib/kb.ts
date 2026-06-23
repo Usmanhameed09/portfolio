@@ -86,6 +86,20 @@ export async function addFile(input: {
   return file
 }
 
+export async function getFileForDownload(
+  id: string,
+): Promise<{ buffer: Buffer; originalName: string; mimeType: string } | null> {
+  const manifest = await readManifest()
+  const file = manifest.files.find((f) => f.id === id)
+  if (!file) return null
+  const buffer = await getStorage().getFile(file.ref)
+  return {
+    buffer,
+    originalName: file.originalName,
+    mimeType: file.mimeType || "application/octet-stream",
+  }
+}
+
 export async function deleteFile(id: string): Promise<boolean> {
   const manifest = await readManifest()
   const idx = manifest.files.findIndex((f) => f.id === id)

@@ -8,6 +8,7 @@ import {
 } from "@/lib/llm"
 import { classifyBuffer, readSelectedItems, setOpenAIFileId } from "@/lib/kb"
 import { listSelectedLinks } from "@/lib/links"
+import { getActiveUser } from "@/lib/auth-guard"
 
 export const runtime = "nodejs"
 export const maxDuration = 60
@@ -56,6 +57,11 @@ async function fileFromForm(
 }
 
 export async function POST(req: Request) {
+  // Block banned/deleted users from triggering paid OpenAI calls, even if their
+  // access token hasn't expired yet (the JWT alone wouldn't reflect a ban).
+  const user = await getActiveUser()
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+
   let form: FormData
   try {
     form = await req.formData()

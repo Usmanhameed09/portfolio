@@ -33,7 +33,10 @@ import {
   Plus,
   Save,
   ExternalLink,
+  Download,
 } from "lucide-react"
+import { createClient } from "@/lib/supabase/client"
+import { apiFetch, forceSignOut, redirectToLogin } from "@/lib/api-client"
 
 interface KbFile {
   id: string
@@ -96,9 +99,9 @@ export default function ProposalGeneratorPage() {
   async function loadAll() {
     try {
       const [kbRes, linksRes, promptsRes] = await Promise.all([
-        fetch("/api/proposal/kb"),
-        fetch("/api/proposal/links"),
-        fetch("/api/proposal/prompts"),
+        apiFetch("/api/proposal/kb"),
+        apiFetch("/api/proposal/links"),
+        apiFetch("/api/proposal/prompts"),
       ])
       if (kbRes.ok) setFiles((await kbRes.json()).files || [])
       if (linksRes.ok) setLinks((await linksRes.json()).links || [])
@@ -112,6 +115,35 @@ export default function ProposalGeneratorPage() {
     loadAll()
   }, [])
 
+  // Auto sign-out when the account is banned/deleted in Supabase. We poll a
+  // server endpoint that checks the *live* ban status (not just the JWT, which
+  // stays valid until expiry) — a 401 makes apiFetch sign out + redirect. Also
+  // redirect on Supabase's own SIGNED_OUT event (e.g. failed token refresh).
+  useEffect(() => {
+    const supabase = createClient()
+
+    async function checkSession() {
+      try {
+        await apiFetch("/api/proposal/session")
+      } catch {
+        // apiFetch already triggered sign-out + redirect on 401.
+      }
+    }
+
+    checkSession()
+    const interval = setInterval(checkSession, 30_000)
+    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
+      // Only redirect here — calling an auth method (signOut) inside this
+      // callback deadlocks Supabase's auth lock and hangs the page.
+      if (event === "SIGNED_OUT") redirectToLogin()
+    })
+
+    return () => {
+      clearInterval(interval)
+      sub.subscription.unsubscribe()
+    }
+  }, [])
+
   async function onUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const fileList = e.target.files
     if (!fileList || fileList.length === 0) return
@@ -121,13 +153,13 @@ export default function ProposalGeneratorPage() {
       for (const f of Array.from(fileList)) {
         const fd = new FormData()
         fd.append("file", f)
-        const res = await fetch("/api/proposal/kb", { method: "POST", body: fd })
+        const res = await apiFetch("/api/proposal/kb", { method: "POST", body: fd })
         if (!res.ok) {
           const data = await res.json().catch(() => ({}))
           throw new Error(data.error || `Upload failed for ${f.name}`)
         }
       }
-      const res = await fetch("/api/proposal/kb")
+      const res = await apiFetch("/api/proposal/kb")
       setFiles((await res.json()).files || [])
     } catch (err) {
       setError((err as Error).message)
@@ -140,7 +172,7 @@ export default function ProposalGeneratorPage() {
   async function onToggleFile(id: string, selected: boolean) {
     setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, selected } : f)))
     try {
-      const res = await fetch("/api/proposal/kb/toggle", {
+      const res = await apiFetch("/api/proposal/kb/toggle", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, selected }),
@@ -154,7 +186,7 @@ export default function ProposalGeneratorPage() {
   async function onDeleteFile(id: string) {
     if (!confirm("Delete this file from the knowledge base?")) return
     try {
-      const res = await fetch(`/api/proposal/kb?id=${encodeURIComponent(id)}`, {
+      const res = await apiFetch(`/api/proposal/kb?id=${encodeURIComponent(id)}`, {
         method: "DELETE",
       })
       if (!res.ok) throw new Error("Failed to delete")
@@ -169,7 +201,7 @@ export default function ProposalGeneratorPage() {
     setAddingLink(true)
     setError(null)
     try {
-      const res = await fetch("/api/proposal/links", {
+      const res = await apiFetch("/api/proposal/links", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: newLinkTitle.trim(), url: newLinkUrl.trim() }),
@@ -192,7 +224,7 @@ export default function ProposalGeneratorPage() {
   async function onToggleLink(id: string, selected: boolean) {
     setLinks((prev) => prev.map((l) => (l.id === id ? { ...l, selected } : l)))
     try {
-      const res = await fetch("/api/proposal/links/toggle", {
+      const res = await apiFetch("/api/proposal/links/toggle", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, selected }),
@@ -206,7 +238,7 @@ export default function ProposalGeneratorPage() {
   async function onDeleteLink(id: string) {
     if (!confirm("Delete this link?")) return
     try {
-      const res = await fetch(`/api/proposal/links?id=${encodeURIComponent(id)}`, {
+      const res = await apiFetch(`/api/proposal/links?id=${encodeURIComponent(id)}`, {
         method: "DELETE",
       })
       if (!res.ok) throw new Error("Failed to delete link")
@@ -228,7 +260,7 @@ export default function ProposalGeneratorPage() {
     const name = window.prompt("Save prompt as:", defaultName)
     if (!name?.trim()) return
     try {
-      const res = await fetch("/api/proposal/prompts", {
+      const res = await apiFetch("/api/proposal/prompts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -257,7 +289,7 @@ export default function ProposalGeneratorPage() {
     if (!existing) return
     if (!confirm(`Delete saved prompt "${existing.name}"?`)) return
     try {
-      const res = await fetch(`/api/proposal/prompts?id=${encodeURIComponent(existing.id)}`, {
+      const res = await apiFetch(`/api/proposal/prompts?id=${encodeURIComponent(existing.id)}`, {
         method: "DELETE",
       })
       if (!res.ok) throw new Error("Failed to delete prompt")
@@ -283,7 +315,7 @@ export default function ProposalGeneratorPage() {
       for (const f of clientFiles) fd.append("clientFiles", f)
       for (const f of extraFiles) fd.append("extraFiles", f)
 
-      const res = await fetch("/api/proposal/generate", { method: "POST", body: fd })
+      const res = await apiFetch("/api/proposal/generate", { method: "POST", body: fd })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
         throw new Error(data.error || "Generation failed")
@@ -340,7 +372,8 @@ export default function ProposalGeneratorPage() {
   }
 
   async function onLogout() {
-    await fetch("/api/proposal/auth", { method: "DELETE" })
+    const supabase = createClient()
+    await supabase.auth.signOut()
     window.location.href = "/proposal-generator/login"
   }
 
@@ -428,6 +461,14 @@ export default function ProposalGeneratorPage() {
                               {(f.size / 1024).toFixed(1)} KB
                             </div>
                           </div>
+                          <a
+                            href={`/api/proposal/kb/download?id=${encodeURIComponent(f.id)}`}
+                            download
+                            className="text-muted-foreground hover:text-primary transition-colors"
+                            aria-label="Download file"
+                          >
+                            <Download className="w-4 h-4" />
+                          </a>
                           <button
                             onClick={() => onDeleteFile(f.id)}
                             className="text-muted-foreground hover:text-destructive transition-colors"
